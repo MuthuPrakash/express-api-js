@@ -1,15 +1,22 @@
 var express = require("express");
-var MongoClient = require('mongodb').MongoClient;
 var bodyParser = require('body-parser')
 var axios = require('axios');
-
-var Json2csvParser = require('json2csv').Parser;
 
 var app = express();
 
 app.use(bodyParser.urlencoded({ extended: true }))
 app.use(bodyParser.json())
 
+const hubspotCodingAssessmentGetEndPoint = "https://candidate.hubteam.com/candidateTest/v3/problem/dataset?userKey=9c6fe3e4286e0ba07146bd1db3ad";  //need to be moved to .env or config
+const sessionLimit = 600000; // 10 minutes in milliseconds - need to be moved to .env or config
+
+const errorHandler = (error, request, response, next) => {
+    // Error handling middleware functionality
+    console.log( `error ${error.message}`) // log the error
+    const status = error.status || 400
+    // send back an easily understandable error message to the caller
+    response.status(status).json(error.message)
+  }
 
 app.listen(5100, () => {
     console.log("Server running on port 5100");
@@ -20,59 +27,56 @@ app.get("/ping", (req, res, next) => {
     res.json("pong");
 });
 
-app.get("/api/testReq", (req, res, next) => {
+app.post("/api/hubspotCodingAssessment", async (req, res, next) => {
     
-    axios.get('https://api.github.com/users/mapbox')
-        .then((response) => {
-            console.log(response.data);
-            res.json(response.data);
-        })
-});
-
-app.post("/api/testPostReq", async (req, res, next) => {
-    
-    // console.log(req.headers.authorization? req.headers.authorization : "No header passed");
-    // axios.get('https://jsonplaceholder.typicode.com/posts',{
-    //     headers:{
-    //     'Authorization': `Bearer abcxyz`
-    // }})
-    //     .then((response) => {
-    //         res.json(response.data);
-    //     },(error) => {
-    //         console.log(error);
-    //         res.json(error)
-    //     })
     try{
-        const response = await axios.get('https://api.twitter.com/2/tweets/search/all?query=Vikram',{
-            headers:{
-            'Authorization': `Bearer AAAAAAAAAAAAAAAAAAAAAESSdQEAAAAAyX9l8J5wHSOKGHVZxL7SNgmr2dU%3Dw2RS7ujAmaRKknN6IS6SifJXCk7KXNEsHlul1x98mgw5QaQjbf`
-            }});
-                // res.json(response.data);
-                res.json(response.data)
+        const response = await axios.get(hubspotCodingAssessmentGetEndPoint);
+    
+        // Grouping by visitor
+        let eventsArray = response.data.events;
+        let key = "visitorId";
+        let resultGroupByVisitor = eventsArray.reduce((result, currentValue) => {
+            let groupKey = currentValue[key];
+            if (!result[groupKey]) {
+                result[groupKey] = [];
+            }
+            result[groupKey].push(currentValue);
+            return result;
+        }, {});
+
+        // Sort by time
+        
+        Object.keys(resultGroupByVisitor).forEach(visitor => {
+            resultGroupByVisitor[visitor].sort((a,b) => {
+                return a.timestamp - b.timestamp
+            });
+        });
+
+        //group based on session by 10 min difference
+
+        let outputJson = {"sessionsByUser": {}}
+        let pagesCollection = [];
+        let timeStampCollection = [];
+        
+        Object.keys(resultGroupByVisitor).forEach(visitor => {
+            outputJson.sessionsByUser[visitor] = [];
+            
+            for(let i = 0; i < resultGroupByVisitor[visitor].length; i++){
+                pagesCollection.push(resultGroupByVisitor[visitor][i]["url"]) 
+                timeStampCollection.push(resultGroupByVisitor[visitor][i]["timestamp"]);
+                if (!(i+1 < resultGroupByVisitor[visitor].length && resultGroupByVisitor[visitor][i+1]["timestamp"] - resultGroupByVisitor[visitor][i]["timestamp"] < sessionLimit)){
+                    outputJson.sessionsByUser[visitor].push({duration: timeStampCollection.length > 1 ? timeStampCollection[timeStampCollection.length-1] - timeStampCollection[0] : 0, pages: pagesCollection, startTime: timeStampCollection[0]} );
+                    pagesCollection = [];
+                    timeStampCollection = [];
+                }
+            }
+        });
+        res.json(outputJson);
     }
     catch(error){
         console.log(error);
-        res.json(error)
+        next(error) 
     }
 });
 
-app.get("/api/testAxiosAllSpread", (req,res, next) => {
-    axios.all([
-        axios.get('https://api.github.com/users/mapbox'),
-        axios.get('https://jsonplaceholder.typicode.com/posts')
-    ]).then(axios.spread((obj1, obj2) => {
-        console.log(obj1.data)
-        console.log(obj2.data)
-        const mergeObj = {
-            ...obj1.data,
-            ...obj2.data
-        }
-        console.log('mergeObj ----- ')
-        console.log(mergeObj);
-        res.json("test");
-    })).catch(error => {
-        console.log('error status: ', error.response.status);
-        res.status(error.response.status)
-        res.json(error);
-    })
-})
+app.use(errorHandler)
